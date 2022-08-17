@@ -3,10 +3,9 @@
 #include <atlimage.h>
 #include <windows.h>
 #include <fstream>
-#include <atlstr.h>
 #include <vector>
 #include <iostream>
-#include "libimage_types.h"
+#include "./libimage/libimage_types.h"
 #define DEEP 4
 class WBinMatrix;
 
@@ -53,6 +52,7 @@ public:
 		else{
 			if (size > bitSize()) {
 				_pBits = (unsigned char*)realloc(_pBits, size);
+				if (!_pBits) return false;
 			}
 		}
 		if (_pBits == nullptr) {
@@ -124,8 +124,8 @@ public:
 		}
 		BITMAPINFOHEADER bitMapInfoHeader;
 		memcpy_s(&bitMapInfoHeader, sizeof(BITMAPINFOHEADER), memSrc + sizeof(BITMAPFILEHEADER), sizeof(BITMAPINFOHEADER));
-		
-		if (create(bitMapInfoHeader.biWidth, bitMapInfoHeader.biHeight, bitMapInfoHeader.biBitCount)) {
+		if (sizeof(bitmapFileHeader) + sizeof(bitMapInfoHeader) + bitMapInfoHeader.biSizeImage > len) return false;
+		if (create(bitMapInfoHeader.biWidth, bitMapInfoHeader.biHeight, bitMapInfoHeader.biBitCount >> 3)) {
 			std::pair<int, int> pitchInfo = getPitchInfo();
 			PBYTE temp_p = memSrc + sizeof(BITMAPINFOHEADER) + sizeof(BITMAPFILEHEADER);
 			PBYTE temp_data = new BYTE[bitMapInfoHeader.biSizeImage];
@@ -142,6 +142,17 @@ public:
 	bool read(ATL::CImage* img) {
 		translate((unsigned char*)img->GetBits(), img->GetBPP() / 8, img->GetPitch());
 		return true;
+	}
+	bool read(int RES_ID) {
+		HINSTANCE hinst = GetModuleHandle(NULL);
+		HRSRC  hsrc = FindResourceW(hinst, MAKEINTRESOURCE(RES_ID), RT_RCDATA);
+		if (!hsrc) return false;
+		HGLOBAL handle = LoadResource(hinst, hsrc);
+		if (!handle) return false;
+		DWORD len = SizeofResource(hinst, hsrc);
+		auto pdata = LockResource(handle);
+		bool ret =read((PBYTE)pdata, len);
+		return ret;
 	}
 	bool write(LPCTSTR file_path) const   {
 		if (empty()) {
@@ -161,7 +172,7 @@ public:
 		bitmapInfoHeader.biWidth = _width;
 		bitmapInfoHeader.biHeight = _height;
 		bitmapInfoHeader.biPlanes = 1;
-		bitmapInfoHeader.biBitCount = _biBitCount << 3;
+		bitmapInfoHeader.biBitCount = (WORD)_biBitCount << 3;
 		bitmapInfoHeader.biCompression = 0;
 		bitmapInfoHeader.biSizeImage = totalSize;
 		bitmapInfoHeader.biXPelsPerMeter = 0;
@@ -352,14 +363,14 @@ private:
 		_lineBits = _width * _biBitCount;
 	}
 private:
-	int _biBitCount; // Í¼Æ¬Î»Êý
-	int _lineBits; // Ã¿ÐÐ×Ö½ÚÊý
-	int _width;  // Í¼Æ¬¿í¶È
-	int _height; // Í¼Æ¬¸ß¶È
-	PBYTE _pBits; // Î»Í¼Êý¾Ý
+	int _biBitCount; // å›¾ç‰‡ä½æ•°
+	int _lineBits; // æ¯è¡Œå­—èŠ‚æ•°
+	int _width;  // å›¾ç‰‡å®½åº¦
+	int _height; // å›¾ç‰‡é«˜åº¦
+	PBYTE _pBits; // ä½å›¾æ•°æ®
 };
 
-//µ¥Í¨µÀÍ¼Ïñ
+//å•é€šé“å›¾åƒ
 class  WImageBin {
 public:
 	using iterator = unsigned char*;
@@ -412,7 +423,7 @@ public:
 		create(img4.width(), img4.height());
 		auto psrc = img4.getBytes();
 		for (size_t i = 0; i < _pixels.size(); ++i) {
-			_pixels[i] = (psrc[2] * 299 + psrc[1] * 587 + psrc[0] * 114 + 500) / 1000; // »Ò¶È´¦Àí
+			_pixels[i] = (BYTE)((psrc[2] * 299 + psrc[1] * 587 + psrc[0] * 114 + 500) / 1000); // ç°åº¦å¤„ç†
 			psrc += DEEP;
 		}
 	}
