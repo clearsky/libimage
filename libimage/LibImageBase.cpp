@@ -1,14 +1,16 @@
-#include "color.h"
-#include "LibImageBase.h"
-#include "helpfunc.h"
+#include "./libimage/color.h"
+#include "./libimage/LibImageBase.h"
+#include "./libimage/helpfunc.h"
 #include <atomic>
-
+#include <mutex>
+#include <condition_variable>
+#pragma warning(disable:4100)
 LibImageBase::LibImageBase() :m_threadPool(std::thread::hardware_concurrency()) {
 	_cur_dic_idx = 0;
 }
 
 LibImageBase::~LibImageBase() {
-	// Çå³ı¼ÓÔØµÄÍ¼Æ¬
+	// æ¸…é™¤åŠ è½½çš„å›¾ç‰‡
 	for (auto&& item : _img_cache) {
 		if(item.second) delete item.second;
 	}
@@ -29,22 +31,22 @@ int LibImageBase::VUINT642Colordfs(const std::vector<UINT64>& dfcolor_pre, std::
 	colors.clear();
 	color_df_t temp_dfcolor;
 	for (auto&& item : dfcolor_pre) {
-		temp_dfcolor.color.r = (item & 0xff00000000000000) >> 56;
-		temp_dfcolor.color.g = (item & 0x00ff000000000000) >> 48;
-		temp_dfcolor.color.b = (item & 0x0000ff0000000000) >> 40;
-		temp_dfcolor.df.r = (item & 0x00000000ff000000) >> 24;
-		temp_dfcolor.df.g = (item & 0x0000000000ff0000) >> 16;
-		temp_dfcolor.df.b = (item & 0x000000000000ff00) >> 8;
+		temp_dfcolor.color.r = (BYTE)((item & 0xff00000000000000) >> 56);
+		temp_dfcolor.color.g = (BYTE)((item & 0x00ff000000000000) >> 48);
+		temp_dfcolor.color.b = (BYTE)((item & 0x0000ff0000000000) >> 40);
+		temp_dfcolor.df.r = (BYTE)((item & 0x00000000ff000000) >> 24);
+		temp_dfcolor.df.g = (BYTE)((item & 0x0000000000ff0000) >> 16);
+		temp_dfcolor.df.b = (BYTE)((item & 0x000000000000ff00) >> 8);
 		colors.push_back(temp_dfcolor);
 	}
-	return colors.size();
+	return (int)colors.size();
 }
 
 void LibImageBase::UINT322Color(const UINT32 v, color_t& color)
 {
-	color.r = (v & 0xff000000) >> 24;
-	color.g = (v & 0x00ff0000) >> 16;
-	color.b = (v & 0x0000ff00) >> 8;
+	color.r = (BYTE)((v & 0xff000000) >> 24);
+	color.g = (BYTE)((v & 0x00ff0000) >> 16);
+	color.b = (BYTE)((v & 0x0000ff00) >> 8);
 }
 
 long LibImageBase::Ocr(Dict& dict, double sim, std::wstring& ret_str) {
@@ -66,6 +68,19 @@ long LibImageBase::OcrOne(Dict& dict, double sim, std::wstring& ret_str)
 	if (!ps.size()) return 0;
 	for (auto& it : ps) {
 		ret_str += it.second;
+	}
+	return 1;
+}
+
+long LibImageBase::OcrOneWithPos(Dict& dict, double sim, ocr_ret_with_pos& ret)
+{
+	ret.str.clear();
+	std::map<point_t, std::wstring> ps;
+	bin_ocr(dict, sim, ps, true);
+	if (!ps.size()) return 0;
+	for (auto& it : ps) {
+		ret.str += it.second;
+		ret.p = it.first;
 	}
 	return 1;
 }
@@ -127,15 +142,15 @@ long LibImageBase::FindPic(std::vector<WImage*>& pics, color_t dfcolor, double s
 	else if (sim >= 0.7 && sim < 0.8) m_simColor = 29;
 	else if (sim >= 0.6 && sim < 0.7) m_simColor = 38;
 	else if (sim >= 0.5 && sim < 0.6) m_simColor = 49;
-	dfcolor.r += m_simColor;
-	dfcolor.g += m_simColor;
-	dfcolor.b += m_simColor;
+	dfcolor.r += (BYTE)m_simColor;
+	dfcolor.g += (BYTE)m_simColor;
+	dfcolor.b += (BYTE)m_simColor;
 	for (int i = 0; i < pics.size(); i++) {
 		_find_pic(pics[i], dfcolor, x,y);
 		if (x != -1) {
 			ret.id = i;
-			ret.pos.x = x;
-			ret.pos.y = y;
+			ret.pos.x = x + _x1;
+			ret.pos.y = _src.height() - y + _y1;
 			return 1;
 		}
 	}
@@ -152,9 +167,9 @@ long LibImageBase::FindPicEx(std::vector<WImage*>& pics, color_t dfcolor, double
 	else if (sim >= 0.7 && sim < 0.8) m_simColor = 29;
 	else if (sim >= 0.6 && sim < 0.7) m_simColor = 38;
 	else if (sim >= 0.5 && sim < 0.6) m_simColor = 49;
-	dfcolor.r += m_simColor;
-	dfcolor.g += m_simColor;
-	dfcolor.b += m_simColor;
+	dfcolor.r += (BYTE)m_simColor;
+	dfcolor.g += (BYTE)m_simColor;
+	dfcolor.b += (BYTE)m_simColor;
 	std::vector<point_t> temp;
 	point_desc_t temp_desc;
 	for (int i = 0; i < pics.size(); i++) {
@@ -162,12 +177,41 @@ long LibImageBase::FindPicEx(std::vector<WImage*>& pics, color_t dfcolor, double
 		_find_pic_ex(pics[i], dfcolor, temp);
 		for (auto&& item : temp) {
 			temp_desc.id = i;
-			temp_desc.pos.x = item.x;
-			temp_desc.pos.y =_src.height()- item.y;
+			temp_desc.pos.x = item.x + _x1;
+			temp_desc.pos.y = _src.height() -  item.y + _y1;
 			vpd.push_back(temp_desc);
 		}
 	}
 	if (vpd.size()) return 1;
+	return 0;
+}
+
+long LibImageBase::FindColor(std::vector<color_df_t>& colors, point_t& ret, int sim_color)
+{
+	for (auto& it : colors) {  //å¯¹æ¯ä¸ªé¢œè‰²æè¿°
+
+		for (int i = 0; i < _src.height(); ++i) {
+			auto p = _src.ptr<color_t>(i);
+			for (int j = 0; j < _src.width(); ++j) {
+				if (IN_RANGE2(*(p + j), it.color, it.df, sim_color)) {
+					ret.x = j + _x1;
+					ret.y = i + _y1;
+					return 1;
+				}
+				p++;
+			}
+		}
+	}
+	ret.x = -1;
+	ret.y = -1;
+	return 0;
+}
+
+long LibImageBase::CmpColor(color_t color, std::vector<color_df_t>& colors, double sim)
+{
+	for (auto& it : colors) {
+		if (IN_RANGE(color, it.color, it.df)) return 1;
+	}
 	return 0;
 }
 
@@ -211,7 +255,7 @@ template<typename T>
 void LibImageBase::_bin_ocr(const T& words, double sim, std::map<point_t, std::wstring>& ps, bool find_one) {
 	int px, py;
 	if (_binary.empty()) return;
-	record_sum(_binary); // Éú³É²î·Ö¾ØÕó
+	record_sum(_binary); // ç”Ÿæˆå·®åˆ†çŸ©é˜µ
 
 	int min_bits_count = 255 * 255;
 	int max_bits_count = 0;
@@ -234,27 +278,27 @@ void LibImageBase::_bin_ocr(const T& words, double sim, std::map<point_t, std::w
 	rect_t crc;
 	int real_word_height = 0;
 	int real_word_width = 0;
-	// ±éÀúÏñËØµã£¬ÒÔÃ¿¸öÏñËØµãÎ»Ô­µã£¬Í¨¹ı×Ö¿âµÄ¿í¸ß£¬Éú³É²»Í¬µÄ
-	// ÇøÓò£¬ÓÃÕâ¸öÇøÓòÓë×Ö¿âÊı¾İ±È¶Ô
-	for (py = 0; py < _binary.height() - min_height; ++py) {
-		for (px = 0; px < _binary.width() - min_width; ++px) {
-			// ÒÑÊ¶±ğµ½µÄÇøÓòÅÅ³ı
+	// éå†åƒç´ ç‚¹ï¼Œä»¥æ¯ä¸ªåƒç´ ç‚¹ä½åŸç‚¹ï¼Œé€šè¿‡å­—åº“çš„å®½é«˜ï¼Œç”Ÿæˆä¸åŒçš„
+	// åŒºåŸŸï¼Œç”¨è¿™ä¸ªåŒºåŸŸä¸å­—åº“æ•°æ®æ¯”å¯¹
+	for (py = 0; py <= _binary.height() - min_height; ++py) {
+		for (px = 0; px <= _binary.width() - min_width; ++px) {
+			// å·²è¯†åˆ«åˆ°çš„åŒºåŸŸæ’é™¤
 			if (_record.at(py, px)) continue;
-			//ÏñËØµã¹ıÉÙÅÅ³ı,ÏñËØµãÈ«Æ¥ÅäÒ²²»Âú×ãsim
+			//åƒç´ ç‚¹è¿‡å°‘æ’é™¤,åƒç´ ç‚¹å…¨åŒ¹é…ä¹Ÿä¸æ»¡è¶³sim
 			if (region_sum(px,
 				py,
 				min(px + max_width, _binary.width()),
 				min(py + max_height, _binary.height())) < min_bits_count * sim) {
 				continue;
 			}
-			// ÏñËØµã¹ı¶àÅÅ³ı,ÏñËØµãÈ«Æ¥Åä,¶àÓàµÄÏñËØÒ²»á³Å±¬sim,±È¶Ô¶ÔÏóÊÇÏñËØ×÷¶ÔµÄ
-			// ºóÃæÕë¶ÔÃ¿¸ö¾ßÌåwordµÄ»¹ÒªÅÅ³ıÒ»´Î
+			// åƒç´ ç‚¹è¿‡å¤šæ’é™¤,åƒç´ ç‚¹å…¨åŒ¹é…,å¤šä½™çš„åƒç´ ä¹Ÿä¼šæ’‘çˆ†sim,æ¯”å¯¹å¯¹è±¡æ˜¯åƒç´ ä½œå¯¹çš„
+			// åé¢é’ˆå¯¹æ¯ä¸ªå…·ä½“wordçš„è¿˜è¦æ’é™¤ä¸€æ¬¡
 			if (region_sum(px, py, px + min_width, py + min_height) > max_bits_count * (2 - sim)) {
 				continue;
 			}
 			pt.x = px;
 			pt.y = py;
-			// ±éÀú×Ö¿â
+			// éå†å­—åº“
 			for (auto& it : words) {
 				crc.x1 = px;
 				crc.y1 = py;
@@ -262,28 +306,31 @@ void LibImageBase::_bin_ocr(const T& words, double sim, std::map<point_t, std::w
 				crc.y2 = py + (*it).info.h;
 				real_word_height = (*it).info.h;
 				real_word_width = (*it).info.w;
-				// ±ß½ç¼ì²é,Èç¹û³¬³ö±ß½ç,¾Í¿ÉÄÜÆ¥Åä²»µ½ÁË
-				// ³¬³öµÄÎ»ÖÃ¿ÉÄÜ»á±»simºÍĞ³
-				// ¸ß¶ÈÔ½½ç
+				// è¾¹ç•Œæ£€æŸ¥,å¦‚æœè¶…å‡ºè¾¹ç•Œ,å°±å¯èƒ½åŒ¹é…ä¸åˆ°äº†
+				// è¶…å‡ºçš„ä½ç½®å¯èƒ½ä¼šè¢«simå’Œè°
+				// 
+				// é«˜åº¦è¶Šç•Œ
 				if (crc.y2 > _binary.height()) {
-					int d_height = crc.y2 - _binary.height();
-					double d_sim = (double)d_height / (*it).info.h;
-					// ²»¿ÉÄÜÆ¥Åäµ½ÁË
-					if (d_sim > (1. - sim)) {
-						continue;
-					}
-					// »¹ÓĞ»ú»á¼ÌĞøÆ¥Åä,ĞŞÕıÊı¾İ
-					crc.y2 = _binary.height();
-					sim += d_sim;
-					// sim³¬±êÁË,·ÅÆú
-					if (sim > 1. - 10e-5) {
-						continue;
-					}
-					real_word_height -= d_height;
+					continue;
+					//int d_height = crc.y2 - _binary.height();
+					//double d_sim = (double)d_height / (*it).info.h;
+					//// ä¸å¯èƒ½åŒ¹é…åˆ°äº†
+					//if (d_sim > (1. - sim)) {
+					//	continue;
+					//}
+					//// è¿˜æœ‰æœºä¼šç»§ç»­åŒ¹é…,ä¿®æ­£æ•°æ®
+					//crc.y2 = _binary.height();
+					//sim += d_sim;
+					//// simè¶…æ ‡äº†,æ”¾å¼ƒ
+					//if (sim > 1. - 10e-5) {
+					//	continue;
+					//}
+					//real_word_height -= d_height;
 				}
-				// ¿í¶ÈÔ½½ç
+				// å®½åº¦è¶Šç•Œ
 				if (crc.x2 > _binary.width()) {
-					int d_width = crc.x2 - _binary.width();
+					continue;
+					/*int d_width = crc.x2 - _binary.width();
 					double d_sim = (double)d_width / (*it).info.w;
 					if (d_sim > (1. - sim)) {
 						continue;
@@ -293,18 +340,20 @@ void LibImageBase::_bin_ocr(const T& words, double sim, std::map<point_t, std::w
 					if (sim > 1. - 10e-5) {
 						continue;
 					}
-					real_word_width -= d_width;
+					real_word_width -= d_width;*/
 				}
 
-				error = (1. - sim) * real_word_height * real_word_width;
-				// ÅÅ³ıÏñËØ¹ı¶à,ÏñËØµãÈ«Æ¥Åä,¶àÓàµÄÏñËØÒ²»á³Å±¬sim
+				error = (int)((1. - sim) * real_word_height * real_word_width);
+				// æ’é™¤åƒç´ è¿‡å¤š,åƒç´ ç‚¹å…¨åŒ¹é…,å¤šä½™çš„åƒç´ ä¹Ÿä¼šæ’‘çˆ†sim
 				if (abs(region_sum(crc.x1, crc.y1, crc.x2, crc.y2) - (*it).info.bit_count) > error) {
 					continue;
 				}
-				// Æ¥Åä
+				// åŒ¹é…
 				if (word_part_match(crc, error, (*it).data.data())) {
+					pt.x += _x1;
 					pt.y += real_word_height;
 					pt.y = _src.height() - pt.y;
+					pt.y += _y1;
 					ps[pt] = (*it).info.name;
 					_record.fill(crc, 1);
 					if (find_one) return;
@@ -331,29 +380,28 @@ bool LibImageBase::word_part_match(const rect_t& rc, int max_error, const uint8_
 	return true;
 }
 /*
-* _binaryÊÇ¶şÖµ»¯µÄÍ¼,Ö»ÓĞºÚ°×É«
-* _sum´¿ºÚÉ«µÄ24Î»Í¼
+* _binaryæ˜¯äºŒå€¼åŒ–çš„å›¾,åªæœ‰é»‘ç™½è‰²
+* _sumçº¯é»‘è‰²çš„24ä½å›¾
 */
-void LibImageBase::record_sum(const WImageBin& _binary)
+void LibImageBase::record_sum(const WImageBin& _binaryx)
 {
-	_sum.create(_binary.width() + 1, _binary.height() + 1, 3);
+	_sum.create(_binaryx.width() + 1, _binaryx.height() + 1, 3);
 	_sum.fill(WORD_BKCOLOR);
 	int height = _sum.height();
-	int width = _sum.height();
+	int width = _sum.width();
 	int s = 0;
 	for (int i = 1; i < height; ++i) {
 		for (int j = 1; j < width; ++j) {
 			s = 0;
-			s += _sum.at<int>(i - 1, j); //  ×ó±ßÒ»¸öÏñËØ
-			s += _sum.at<int>(i, j - 1); // ÏÂ±ßÒ»¸öÏñËØ
-			s -= _sum.at<int>(i - 1, j - 1); // ×óÏÂ·½Ò»¸öÏñËØ
-			s += (int)_binary.at(i - 1, j - 1); // µ±Ç°Î»ÖÃÏñËØ      
+			s += _sum.at<int>(i - 1, j); //  å·¦è¾¹ä¸€ä¸ªåƒç´ 
+			s += _sum.at<int>(i, j - 1); // ä¸‹è¾¹ä¸€ä¸ªåƒç´ 
+			s -= _sum.at<int>(i - 1, j - 1); // å·¦ä¸‹æ–¹ä¸€ä¸ªåƒç´ 
+			s += (int)_binaryx.at(i - 1, j - 1); // å½“å‰ä½ç½®åƒç´       
 			_sum.at<int>(i, j) = s;
 		}
 	}
 }
-
-// ¼ÆËãÏñËØÃÜ¶È
+// è®¡ç®—åƒç´ å¯†åº¦
 int LibImageBase::region_sum(int x1, int y1, int x2, int y2)
 {
 	int ans = _sum.at<INT32>(y2, x2) - _sum.at<INT32>(y2, x1) -
@@ -362,15 +410,15 @@ int LibImageBase::region_sum(int x1, int y1, int x2, int y2)
 }
 void LibImageBase::_find_pic(WImage* pic, const color_t& dfcolor, long&x, long&y)
 {
-	// Í¼Æ¬·ÖÇø
-	int thread_count = m_threadPool.getThreadNum();
+	// å›¾ç‰‡åˆ†åŒº
+	int thread_count = (int)m_threadPool.getThreadNum();
 	std::vector<rect_t> blocks;
 	rect_t temp_rect(0, 0, _src.width(), _src.height());
 	temp_rect.shrinkRect(pic->width(), pic->height());
 	temp_rect.divideBlock(thread_count,
 	temp_rect.width() < temp_rect.height(), blocks);
 	std::vector<std::future<point_t>> results;
-	// ¶àÏß³Ì·ÖÆ¬Ê¶±ğ
+	// å¤šçº¿ç¨‹åˆ†ç‰‡è¯†åˆ«
 	std::atomic_bool stop = false;
 	auto func = [this, &pic,&stop, &dfcolor](const rect_t& rc)->point_t {
 		bool bad = false;
@@ -398,7 +446,7 @@ void LibImageBase::_find_pic(WImage* pic, const color_t& dfcolor, long&x, long&y
 					continue;
 				}
 				stop = true;
-				return { j, i+pic->height() };
+				return { j, i };
 			}
 		}
 		return { -1,-1 };
@@ -410,23 +458,24 @@ void LibImageBase::_find_pic(WImage* pic, const color_t& dfcolor, long&x, long&y
 		point_t p = item.get();
 		if (p.x != -1) {
 			x = p.x;
-			y = _src.height() - p.y;
+			y = p.y;
 			return;
 		}
 	}
 }
 void LibImageBase::_find_pic_ex(WImage* pic, const color_t& dfcolor, std::vector<point_t>& ret)
 {
-	// Í¼Æ¬·ÖÇø
-	int thread_count = m_threadPool.getThreadNum();
+	// å›¾ç‰‡åˆ†åŒº
+	int thread_count = (int)m_threadPool.getThreadNum();
 	std::vector<rect_t> blocks;
 	rect_t temp_rect(0, 0, _src.width(), _src.height());
 	temp_rect.shrinkRect(pic->width(), pic->height());
 	temp_rect.divideBlock(thread_count,
 		temp_rect.width() < temp_rect.height(), blocks);
 	std::vector<std::future<void>> results;
-	// ¶àÏß³Ì·ÖÆ¬Ê¶±ğ
-	auto func = [this, &pic, &dfcolor,&ret](const rect_t& rc)->void {
+	std::mutex mutex;
+	// å¤šçº¿ç¨‹åˆ†ç‰‡è¯†åˆ«
+	auto func = [this, &pic, &dfcolor,&ret,&mutex](const rect_t& rc)->void {
 		bool bad = false;
 		int index1 = 0;
 		int index2 = 0;
@@ -450,7 +499,9 @@ void LibImageBase::_find_pic_ex(WImage* pic, const color_t& dfcolor, std::vector
 					bad = false;
 					continue;
 				}
-				ret.push_back({ j, i + pic->height() });
+				// è¿™ä¸ªåœ°æ–¹æœ‰å†™å…¥å†²çª,éœ€è¦åŠ é”
+				std::lock_guard<std::mutex> lc(mutex);
+				ret.push_back({ j, i });
 			}
 		}
 	};
@@ -471,7 +522,7 @@ void LibImageBase::bgr2binary(std::vector<color_df_t>& colors) {
 		for (int j = 0; j < ncols; ++j) {
 			BYTE g1 = psrc->toGray();
 			*pbin = WORD_BKCOLOR;
-			for (auto& it : colors) {  //¶ÔÃ¿¸öÑÕÉ«ÃèÊö
+			for (auto& it : colors) {  //å¯¹æ¯ä¸ªé¢œè‰²æè¿°
 				if (it.compare(*psrc)) {
 					*pbin = WORD_COLOR;
 					break;
